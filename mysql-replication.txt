@@ -1,0 +1,176 @@
+# 安装 mysql5.1.30 二进制包
+nohup /mnt/hgfs/share/LAMP--mysql5.1.30-only.sh &
+
+# 给 roo t用户添加 mysql 命令环境变量 /usr/local/mysql/bin
+# 使环境变量生效
+[root@S31 ~]# vi /root/.bash_profile
+PATH=$PATH:$HOME/bin:/usr/local/mysql/bin
+[root@S31 ~]# su -
+
+vi /etc/sysconfig/system-config-securitylevel 
+--disabled
+--trust=eth1
+--trust=eth0
+--port=3306:tcp
+--port=22:tcp
+--port=80:tcp
+
+---------------------------------------------------------------------
+S31
+
+mysql -p
+
+use mysql
+grant replication slave on *.* to 'fkoocopy'@'172.%' identified by 'fkoopasswd';
+grant select on *.* to 'fkoo_monitor'@'172.%' identified by 'FkooMonitor';
+
+delete from user where user='';
+delete from user where user='root' and host='%';
+delete from user where user='root' and host='127.0.0.1';
+
+delete from user where user='root' and host='T254';
+
+use mysql
+flush privileges;
+select * from user;
+quit;
+
+cp /etc/my.cnf /etc/my.cnf.bak
+vi /etc/my.cnf
+
+log-bin=mysql-bin
+server-id       = 1
+
+binlog-do-db=fkoodb
+binlog-ignore-db = mysql
+binlog-ignore-db = test
+auto-increment-increment = 2
+auto-increment-offset = 1
+
+replicate-same-server-id = 0
+master-host=172.31.0.32
+master-user=fkoocopy
+master-password=fkoopasswd
+master-port=3306
+master-connect-retry=60
+report-host=S31
+replicate-do-db=fkoodb
+log-slave-updates
+expire_logs_days = 10
+max_binlog_size = 500M
+
+service mysql restart
+
+mysql -p
+show master status;
+show slave status\G;
+
+STOP SLAVE; 
+RESET MASTER; 
+RESET SLAVE; 
+
+SLAVE START; 
+
+flush master;
+flush slave;
+
+@@ 在建立好Replication之后 接着新建将被监控的库和表,再安装mon,heartbeat
+# 建立测试数据库和表单
+# 说明: 表单必须建立,否则后面配置的 mon 监测不到数据库表单而触发误动作
+[root@S31 ~]# mysql -p
+show databases;
+create database fkoodb;
+use fkoodb
+CREATE TABLE mytable (name VARCHAR(20), sex CHAR(1), \
+birth DATE, birthaddr VARCHAR(20)); 
+show tables;
+DESCRIBE mytable; 
+select * from mytable;
+
+# mysqldump -uroot -p fkoodb > /mnt/hgfs/share/fkoodb.sql
+mysql -u root -prvdgi,jl fkoodb < /mnt/hgfs/share/fkoodb.sql
+
+---------------------------------------------------------------------
+S32
+
+use mysql
+grant replication slave on *.* to 'fkoocopy'@'172.%' identified by 'fkoopasswd';
+grant select on *.* to 'fkoo_monitor'@'172.%' identified by 'FkooMonitor';
+
+
+delete from user where user='';
+delete from user where user='root' and host='%';
+delete from user where user='root' and host='127.0.0.1';
+delete from user where user='root' and host='T254';
+
+use mysql
+flush privileges;
+select * from user;
+quit;
+
+cp /etc/my.cnf /etc/my.cnf.bak
+vi /etc/my.cnf
+
+log-bin=mysql-bin
+# server-id       = 1
+server-id       = 2
+
+binlog-do-db=fkoodb
+binlog-ignore-db = mysql
+binlog-ignore-db = test
+auto-increment-increment = 2
+auto-increment-offset = 2
+
+replicate-same-server-id = 0
+master-host=172.31.0.31
+master-user=fkoocopy
+master-password=fkoopasswd
+master-port=3306
+master-connect-retry=60
+report-host=S32
+replicate-do-db=fkoodb
+log-slave-updates
+expire_logs_days = 10
+max_binlog_size = 500M
+
+service mysql restart
+
+mysql -p
+show master status;
+show slave status\G;
+
+flush master;
+stop slave;
+reset slave;
+flush slave;
+start slave;
+
+----------------------------------------------
+S33
+
+vi /etc/my.cnf
+
+#log-bin=mysql-bin
+server-id       = 3
+master-host=10.0.1.220
+#auto_increment_increment = 10
+#auto_increment_offset = 3
+master-user=fkoocopy
+master-password=fkoopasswd
+master-port=3306
+master-connect-retry=10
+report-host=S223
+replicate-do-db=fkoodb
+read-only
+#log-slave-updates
+log-warnings
+
+
+
+
+
+
+
+
+
+

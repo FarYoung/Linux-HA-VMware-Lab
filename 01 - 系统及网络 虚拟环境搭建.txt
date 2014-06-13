@@ -1,0 +1,518 @@
+################################################
+# File name   : 01 - 系统及网络 虚拟环境搭建
+# Description : 01 of Web2.0 大型网站架构试验
+# Requirement : 硬件: 主机(寄主)2G内存,至少5G空闲硬盘空间
+#		OS: Windows XP
+#		软件: RHEL5.1 ISO光盘文件, VMware-Tools Linux.iso 等.
+#
+# 视频录像      : 01 - 精简化安装RHEL5.1 (默认不安装Apache,Mysql等服务)
+#		02 - 安装VMware-Tools,配置共享
+#		03 - 建虚拟组并添加T254虚机
+#		04 - 克隆虚机,搭建虚拟网络
+#		05 - 开始使用虚拟系统及网络
+#
+# Copyright(C), fkoo, 2008, All Rights Reserved.
+#
+# Author: Far Young Chen / fkoo (fkoo.com@gmail.com) 
+# URL: http://www.fkoo.net
+#
+#################################################
+
+#**************************************************************************************************
+#				      Network Layout
+#**************************************************************************************************
+
+                                         { Client LAN }
+		   ---------------- 192.168.1.0 / 255.255.255.0 --------------
+						|
+						| eth0
+					[ Router/T254 ] eth2 +...........................................
+						| eth1					                :
+						|					                :
+   ---------------------------WEB LAN 10.0.0.0 / 255.255.255.0 -----------------------------------      :
+         |     :     |            |           |           |            |           |           |        :
+<Master> |..[ VIP ]..|   <Slave>  |           |           |            |           |           |        :
+      \  |           |  /         |           |           |            |           |           |        :
+   [ LVS/V02 ] [ LVS/V03 ]  [ WEB/W11 ] [ WEB/W12 ] [ WEB/W13 ]  [ MOG/M21 ] [ MOG/M22 ] [ MOG/M23 ]    :
+         |           |            |           |           |            |           |           |        :
+         |.heartbeat.|            |           |           |            |           |           |        :
+         |           |            |           |           |            |           |           |        :
+   ------------------------DB LAN 172.16.0.0 / 255.255.255.0 ------------------------------------- +....:
+                                |     :     |            |
+                   <Master>     |..[ VIP ]..|   <Slave>  |
+		          \     |           |   /     \  |
+		            [ DB/S31 ]  [ DB/S32 ]   [ DB/S33 ]
+			        |           |            |
+			 	|.heartbeat.|            |
+			 	|           |            |
+		   ----SYNC LAN 172.31.0.0 / 255.255.255.0 ------------
+
+
+
+		No.	hostname	IP:ethN			Function
+	      ---------------------------------------------------------------
+					192.168.1.254:eth0
+		01	T254		10.0.0.254:eth1		Router
+					172.16.0.254:eth2
+	      ---------------------------------------------------------------
+			/		10.0.0.1		LVS VIP
+		..........................................................
+		02	V02		10.0.0.2:eth0		LVS Master
+					172.16.0.2:eth1		Heartbeat
+		..........................................................
+		03	V03		10.0.0.3:eth0		LVS Slave
+					172.16.0.3:eth1		Heartbeat
+	      ---------------------------------------------------------------
+		04	W11		10.0.0.11:eth0		Web Server
+					172.16.0.11:eth1	Mog traker
+		..........................................................
+		05	W12		10.0.0.12:eth0		Web Server
+					172.16.0.12:eth1	Mog traker
+		..........................................................
+		06	W13		10.0.0.13:eth0		Web Server
+					172.16.0.13:eth1	Mog traker
+	      ---------------------------------------------------------------
+		07	M21		10.0.0.21:eth0		Mog Storage
+					172.16.0.21:eth1
+		..........................................................
+		08	M22		10.0.0.22:eth0		Mog Storage
+					172.16.0.22:eth1
+		..........................................................
+		09	M23		10.0.0.23:eth0		Mog Storage
+					172.16.0.23:eth1
+	      ---------------------------------------------------------------
+			/		172.16.0.1		DB VIP
+		..........................................................
+		10	S31		172.16.0.31:eth0	DB Master
+					172.31.0.31:eth1	Replication
+		..........................................................
+		11	S32		172.16.0.32:eth0	DB Slave
+					172.31.0.32:eth1	Replication
+		..........................................................
+		12	S33		172.16.0.33:eth0	DB Slave
+					172.31.0.33:eth1
+	      ---------------------------------------------------------------
+
+#**************************************************************************************************
+#				      Setup router T254
+#**************************************************************************************************
+# 前沿: 需先完成视频录像中 "01 - 精简化安装RHEL5.1" , "02 - 安装VMware-Tools,配置共享" 和
+# "03 - 建虚拟组并添加T254虚机" ; 再继续如下操作步骤
+
+# 缩短启动选择菜单的等待时间为 1 秒
+# (单CPU,32位系统环境下) 添加 clock=pit nosmp noapic nolapic ; 解决Vmware下linux时间跑快及跑慢的问题
+[root@T254 ~]# vi /etc/grub.conf
+timeout=1
+kernel /vmlinuz-2.6.18-53.el5 ... rhgb quiet clock=pit nosmp noapic nolapic
+
+# 开启VMware客户机与主机(寄主)之间的时间同步
+# 启动 vmware-tools 服务, 并设置为默认启动
+[root@T254 ~]#
+vmware-guestd --cmd "vmx.set_option synctime 0 1"
+service vmware-tools start
+chkconfig vmware-tools on
+
+# 查看系统时间
+[root@T254 ~]# date
+
+# 修改当前主机名 (需重新登录生效; 重启系统即失效)
+[root@T254 ~]# hostname T254
+
+# 修改主机名配置文件 (永久修改)
+[root@T254 ~]# vi /etc/sysconfig/network
+HOSTNAME=T254			# Correct this!
+GATEWAY=192.168.1.1
+
+# 检查当前主机名
+[root@T254 ~]# uname -n
+T254
+
+# 添加 主机名-IP 的本地解析
+[root@T254 ~]# vi /etc/hosts
+192.168.1.254		T254	# Append these!
+10.0.0.254		T254
+172.16.0.254		T254
+10.0.0.2		V02
+172.16.0.2		V02
+10.0.0.3		V03
+172.16.0.3		V03
+10.0.0.11		W11
+172.16.0.11		W11
+10.0.0.12		W12
+172.16.0.12		W12
+10.0.0.13		W13
+172.16.0.13		W13
+10.0.0.21		M21
+172.16.0.21		M21
+10.0.0.22		M22
+172.16.0.22		M22
+10.0.0.23		M23
+172.16.0.23		M23
+172.16.0.31		S31
+172.31.0.31		S31
+172.16.0.32		S32
+172.31.0.32		S32
+172.16.0.33		S33
+172.31.0.33		S33
+
+# 修改启动级别为 init 3, 即字符界面
+[root@T254 ~]# vi /etc/inittab 
+id:3:initdefault:
+
+# 重启网络服务, 检查MAC更新
+[root@T254 ~]# service network restart
+Shutting down interface eth0:  Device eth0 has MAC address 00:0C:29:CD:92:FC, instead of ...
+Shutting down interface eth1:  Device eth1 has MAC address 00:0C:29:CD:92:06, instead of ...
+
+# 修改网卡IP及MAC等参数
+[root@T254 ~]# vi /etc/sysconfig/network-scripts/ifcfg-eth0
+# Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+DEVICE=eth0
+BOOTPROTO=static
+BROADCAST=192.168.1.255
+HWADDR=00:0C:29:CD:92:FC
+IPADDR=192.168.1.254
+NETMASK=255.255.255.0
+NETWORK=192.168.1.0
+ONBOOT=yes
+
+[root@T254 ~]# vi /etc/sysconfig/network-scripts/ifcfg-eth1
+# Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+DEVICE=eth1
+BOOTPROTO=static
+BROADCAST=10.0.0.255
+HWADDR=00:0C:29:CD:92:06
+IPADDR=10.0.0.254
+NETMASK=255.255.255.0
+NETWORK=10.0.0.0
+ONBOOT=yes
+
+[root@T254 ~]# vi /etc/sysconfig/network-scripts/ifcfg-eth2
+# Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+DEVICE=eth2
+BOOTPROTO=static
+BROADCAST=172.16.0.255
+HWADDR=00:0C:29:CD:92:10
+IPADDR=172.16.0.254
+NETMASK=255.255.255.0
+NETWORK=172.16.0.0
+ONBOOT=yes
+
+# 打开 ip forward 的路由转发功能
+[root@T254 ~]# vi /etc/sysctl.conf
+net.ipv4.ip_forward = 1
+
+# 使 sysctl.conf 配置立即生效(二选一即可)
+[root@T254 ~]# sysctl -p
+[root@T254 ~]# echo "1"> /proc/sys/net/ipv4/ip_forward
+
+# 在 Client LAN 的Windows客户端添加永久路由 cmd >
+route add 10.0.0.0  mask 255.255.255.0 192.168.1.254 -p
+route add 172.16.0.0  mask 255.255.255.0 192.168.1.254 -p
+
+# 后记: 至此, 方可继续执行视频录像 "04 - 克隆虚机,搭建虚拟网络" 的操作,开始克隆T254而生成其他虚拟客户机
+
+#**************************************************************************************************
+#				      Setup V02 network
+#**************************************************************************************************
+# 修改当前主机名 (重启后失效)
+[root@V02 ~]# hostname V02
+
+# 修改主机名的配置
+[root@V02 ~]# vi /etc/sysconfig/network
+HOSTNAME=V02
+# GATEWAY=10.0.0.254
+
+# 检查当前主机名
+[root@V02 ~]# uname -n
+V02
+
+# 删除自 T254 克隆而来的 eth2 配置文件
+[root@V02 ~]# rm -rf /etc/sysconfig/network-scripts/ifcfg-eth2
+
+# 重启网络服务, 检查MAC更新 (例如:)
+[root@V02 ~]# service network restart
+Shutting down interface eth0:  Device eth0 has MAC address 00:0C:29:D9:CE:F6, instead of ...
+Shutting down interface eth1:  Device eth1 has MAC address 00:0C:29:D9:CE:00, instead of ...
+
+# 修改网卡IP及MAC等参数
+[root@V02 ~]# vi /etc/sysconfig/network-scripts/ifcfg-eth0
+# Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+DEVICE=eth0
+BOOTPROTO=static
+BROADCAST=10.0.0.255
+HWADDR=00:0C:29:D9:CE:F6
+IPADDR=10.0.0.2
+NETMASK=255.255.255.0
+NETWORK=10.0.0.0
+ONBOOT=yes
+GATEWAY=10.0.0.254
+
+[root@V02 ~]# vi /etc/sysconfig/network-scripts/ifcfg-eth1
+# Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+DEVICE=eth1
+BOOTPROTO=static
+BROADCAST=172.16.0.255
+HWADDR=00:0C:29:D9:CE:00
+IPADDR=172.16.0.2
+NETMASK=255.255.255.0
+NETWORK=172.16.0.0
+ONBOOT=yes
+# GATEWAY=172.16.0.254
+
+#**************************************************************************************************
+#				      Setup V03 network
+#**************************************************************************************************
+# 与  Setup V02 network 相同, 只需调整 hostname,IP,MAC 为 V03 的参数即可.
+
+#**************************************************************************************************
+#				      Setup W11 network
+#**************************************************************************************************
+# 修改当前主机名 (重启后失效)
+[root@W11 ~]# hostname W11
+
+# 修改主机名的配置
+[root@W11 ~]# vi /etc/sysconfig/network
+HOSTNAME=W11
+# GATEWAY=10.0.0.254
+
+# 检查当前主机名
+[root@W11 ~]# uname -n
+W11
+
+# 删除自 T254 克隆而来的 eth2 配置文件
+[root@W11 ~]# rm -rf /etc/sysconfig/network-scripts/ifcfg-eth2
+
+# 重启网络服务, 检查MAC更新 (例如:)
+[root@W11 ~]# service network restart
+Shutting down interface eth0:  Device eth0 has MAC address 00:0C:29:65:BE:1E, instead of ...
+Shutting down interface eth1:  Device eth1 has MAC address 00:0C:29:65:BE:28, instead of ...
+
+# 修改网卡IP及MAC等参数
+[root@W11 ~]# vi /etc/sysconfig/network-scripts/ifcfg-eth0
+# Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+DEVICE=eth0
+BOOTPROTO=static
+BROADCAST=10.0.0.255
+HWADDR=00:0C:29:65:BE:1E
+IPADDR=10.0.0.11
+NETMASK=255.255.255.0
+NETWORK=10.0.0.0
+ONBOOT=yes
+GATEWAY=10.0.0.254
+
+[root@W11 ~]# vi /etc/sysconfig/network-scripts/ifcfg-eth1
+# Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+DEVICE=eth1
+BOOTPROTO=static
+BROADCAST=172.16.0.255
+HWADDR=00:0C:29:65:BE:28
+IPADDR=172.16.0.11
+NETMASK=255.255.255.0
+NETWORK=172.16.0.0
+ONBOOT=yes
+# GATEWAY=172.16.0.254
+
+# 关闭 ip forward 的路由转发功能
+[root@T254 ~]# vi /etc/sysctl.conf
+net.ipv4.ip_forward = 0
+
+# 使 sysctl.conf 配置立即生效(二选一即可)
+[root@T254 ~]# sysctl -p
+[root@T254 ~]# echo "0"> /proc/sys/net/ipv4/ip_forward
+
+#**************************************************************************************************
+#				      Setup W12,W13 network
+#**************************************************************************************************
+# 与  Setup W11 network 相同, 只需调整 hostname,IP,MAC 为 W12,W13 的参数即可.
+
+
+#**************************************************************************************************
+#				      Setup M21 network
+#**************************************************************************************************
+# 修改当前主机名 (重启后失效)
+[root@M21 ~]# hostname M21
+
+# 修改主机名的配置
+[root@M21 ~]# vi /etc/sysconfig/network
+HOSTNAME=M21
+# GATEWAY=10.0.0.254
+
+# 检查当前主机名
+[root@M21 ~]# uname -n
+M21
+
+# 删除自 T254 克隆而来的 eth2 配置文件
+[root@M21 ~]# rm -rf /etc/sysconfig/network-scripts/ifcfg-eth2
+
+# 重启网络服务, 检查MAC更新 (例如:)
+[root@M21 ~]# service network restart
+Shutting down interface eth0:  Device eth0 has MAC address 00:0C:29:29:7D:FC, instead of ...
+Shutting down interface eth1:  Device eth1 has MAC address 00:0C:29:29:7D:06, instead of ...
+
+# 修改网卡IP及MAC等参数
+[root@M21 ~]# vi /etc/sysconfig/network-scripts/ifcfg-eth0
+# Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+DEVICE=eth0
+BOOTPROTO=static
+BROADCAST=10.0.0.255
+HWADDR=00:0C:29:29:7D:FC
+IPADDR=10.0.0.21
+NETMASK=255.255.255.0
+NETWORK=10.0.0.0
+ONBOOT=yes
+GATEWAY=10.0.0.254
+
+[root@M21 ~]# vi /etc/sysconfig/network-scripts/ifcfg-eth1
+# Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+DEVICE=eth1
+BOOTPROTO=static
+BROADCAST=172.16.0.255
+HWADDR=00:0C:29:29:7D:06
+IPADDR=172.16.0.21
+NETMASK=255.255.255.0
+NETWORK=172.16.0.0
+ONBOOT=yes
+# GATEWAY=172.16.0.254
+
+# 关闭 ip forward 的路由转发功能
+[root@T254 ~]# vi /etc/sysctl.conf
+net.ipv4.ip_forward = 0
+
+# 使 sysctl.conf 配置立即生效(二选一即可)
+[root@T254 ~]# sysctl -p
+[root@T254 ~]# echo "0"> /proc/sys/net/ipv4/ip_forward
+
+#**************************************************************************************************
+#				    Setup M22,M23 network
+#**************************************************************************************************
+# 与  Setup M21 network 相同, 只需调整 hostname,IP,MAC 为 M22,M23 的参数即可.
+
+#**************************************************************************************************
+#				      Setup S31 network
+#**************************************************************************************************
+# 修改当前主机名 (重启后失效)
+[root@S31 ~]# hostname S31
+
+# 修改主机名的配置
+[root@S31 ~]# vi /etc/sysconfig/network
+HOSTNAME=S31
+# GATEWAY=10.0.0.254
+
+# 检查当前主机名
+[root@S31 ~]# uname -n
+S31
+
+# 删除自 T254 克隆而来的 eth2 配置文件
+[root@S31 ~]# rm -rf /etc/sysconfig/network-scripts/ifcfg-eth2
+
+# 重启网络服务, 检查MAC更新 (例如:)
+[root@S31 ~]# service network restart
+Shutting down interface eth0:  Device eth0 has MAC address 00:0C:29:08:FC:B2, instead of ...
+Shutting down interface eth1:  Device eth1 has MAC address 00:0C:29:08:FC:BC, instead of ...
+
+# 修改网卡IP及MAC等参数
+[root@S31 ~]# vi /etc/sysconfig/network-scripts/ifcfg-eth0
+# Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+DEVICE=eth0
+BOOTPROTO=static
+BROADCAST=172.16.0.255
+HWADDR=00:0C:29:08:FC:B2
+IPADDR=172.16.0.31
+NETMASK=255.255.255.0
+NETWORK=172.16.0.0
+ONBOOT=yes
+GATEWAY=172.16.0.254
+
+[root@S31 ~]# vi /etc/sysconfig/network-scripts/ifcfg-eth1
+# Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+DEVICE=eth1
+BOOTPROTO=static
+BROADCAST=172.31.0.255
+HWADDR=00:0C:29:08:FC:BC
+IPADDR=172.31.0.31
+NETMASK=255.255.255.0
+NETWORK=172.31.0.0
+ONBOOT=yes
+
+# 关闭 ip forward 的路由转发功能
+[root@T254 ~]# vi /etc/sysctl.conf
+net.ipv4.ip_forward = 0
+
+# 使 sysctl.conf 配置立即生效(二选一即可)
+[root@T254 ~]# sysctl -p
+[root@T254 ~]# echo "0"> /proc/sys/net/ipv4/ip_forward
+
+#**************************************************************************************************
+#				    Setup S32,S33 network
+#**************************************************************************************************
+# 与  Setup S31 network 相同, 只需调整 hostname,IP,MAC 为 S32,S33 的参数即可.
+
+[root@S31 ~]# vi /etc/sysconfig/network
+HOSTNAME=S32
+
+ rm -rf /etc/sysconfig/network-scripts/ifcfg-eth2
+
+[root@S31 ~]# service network restart
+
+# 修改网卡IP及MAC等参数
+[root@S31 ~]# vi /etc/sysconfig/network-scripts/ifcfg-eth0
+# Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+DEVICE=eth0
+BOOTPROTO=static
+BROADCAST=172.16.0.255
+HWADDR=00:0C:29:8B:D5:BE
+IPADDR=172.16.0.32
+NETMASK=255.255.255.0
+NETWORK=172.16.0.0
+ONBOOT=yes
+GATEWAY=172.16.0.254
+
+[root@S31 ~]# vi /etc/sysconfig/network-scripts/ifcfg-eth1
+# Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+DEVICE=eth1
+BOOTPROTO=static
+BROADCAST=172.31.0.255
+HWADDR=00:0C:29:8B:D5:C8
+IPADDR=172.31.0.32
+NETMASK=255.255.255.0
+NETWORK=172.31.0.0
+ONBOOT=yes
+
+
+
+[root@S31 ~]# vi /etc/sysconfig/network
+HOSTNAME=S33
+
+ rm -rf /etc/sysconfig/network-scripts/ifcfg-eth2
+
+[root@S31 ~]# service network restart
+
+# 修改网卡IP及MAC等参数
+[root@S31 ~]# vi /etc/sysconfig/network-scripts/ifcfg-eth0
+# Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+DEVICE=eth0
+BOOTPROTO=static
+BROADCAST=172.16.0.255
+HWADDR=00:0C:29:08:46:72
+IPADDR=172.16.0.33
+NETMASK=255.255.255.0
+NETWORK=172.16.0.0
+ONBOOT=yes
+GATEWAY=172.16.0.254
+
+[root@S31 ~]# vi /etc/sysconfig/network-scripts/ifcfg-eth1
+# Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+DEVICE=eth1
+BOOTPROTO=static
+BROADCAST=172.31.0.255
+HWADDR=00:0C:29:08:46:7C
+IPADDR=172.31.0.33
+NETMASK=255.255.255.0
+NETWORK=172.31.0.0
+ONBOOT=yes
+
+
+# EOF
+
+# 下一篇: 02 - 搭建LVS/DR-HA高可用负载均衡 / 02 of Web2.0 大型网站架构试验
